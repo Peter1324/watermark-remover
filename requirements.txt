@@ -1,7 +1,6 @@
 runpod>=1.6.0
-torch
 simple-lama-inpainting
-opencv-python-headless
-pillow
-numpy
-requests
+opencv-python-headless==4.8.1.78
+pillow==9.5.0
+numpy==1.26.4
+requests>=2.31.0
