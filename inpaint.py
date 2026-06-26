@@ -90,7 +90,7 @@ def process_video(input_path: str, output_path: str, box) -> None:
          "-f", "rawvideo", "-pix_fmt", "bgr24",
          "-s", f"{W}x{H}", "-r", f"{fps}",
          "-i", "-",
-         "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "16",
+         "-an", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "slow", "-crf", "16",
          silent],
         stdin=subprocess.PIPE
     )
