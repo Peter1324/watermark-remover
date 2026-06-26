@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watermark Remover</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; }
+  .stage { position: relative; display: inline-block; }
+  video { max-width: 100%; display: block; }
+  canvas { position: absolute; inset: 0; cursor: crosshair; }
+  button { padding: .6rem 1rem; font-size: 1rem; margin-top: 1rem; }
+  #status { margin-top: 1rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Watermark Remover</h1>
+<p>1) Video laden &nbsp; 2) auf einem Frame ein Rechteck über das Wasserzeichen ziehen &nbsp; 3) starten.</p>
+
+<input type="file" id="file" accept="video/*"><br><br>
+<div class="stage">
+  <video id="vid" controls muted></video>
+  <canvas id="cv"></canvas>
+</div>
+
+<div>
+  <button id="go" disabled>Wasserzeichen entfernen</button>
+</div>
+<div id="status"></div>
+
+<script>
+const fileInput = document.getElementById('file');
+const vid = document.getElementById('vid');
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const go  = document.getElementById('go');
+const statusEl = document.getElementById('status');
+
+let box = null;          // in ANZEIGE-Pixeln
+let drag = null;
+let chosenFile = null;
+
+fileInput.onchange = e => {
+  chosenFile = e.target.files[0];
+  vid.src = URL.createObjectURL(chosenFile);
+};
+
+vid.onloadedmetadata = () => {
+  // Overlay-Canvas auf angezeigte Videogröße bringen
+  cv.width = vid.clientWidth;
+  cv.height = vid.clientHeight;
+};
+
+cv.onmousedown = e => {
+  const r = cv.getBoundingClientRect();
+  drag = { x: e.clientX - r.left, y: e.clientY - r.top };
+};
+cv.onmousemove = e => {
+  if (!drag) return;
+  const r = cv.getBoundingClientRect();
+  const cx = e.clientX - r.left, cy = e.clientY - r.top;
+  box = {
+    x: Math.min(drag.x, cx), y: Math.min(drag.y, cy),
+    w: Math.abs(cx - drag.x), h: Math.abs(cy - drag.y)
+  };
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2;
+  ctx.strokeRect(box.x, box.y, box.w, box.h);
+  go.disabled = box.w < 3 || box.h < 3;
+};
+window.onmouseup = () => { drag = null; };
+
+go.onclick = async () => {
+  if (!box || !chosenFile) return;
+  // Anzeige-Box -> echte Videopixel skalieren
+  const sx = vid.videoWidth  / cv.width;
+  const sy = vid.videoHeight / cv.height;
+  const real = {
+    x: Math.round(box.x * sx), y: Math.round(box.y * sy),
+    w: Math.round(box.w * sx), h: Math.round(box.h * sy)
+  };
+
+  const fd = new FormData();
+  fd.append('file', chosenFile);
+  fd.append('x', real.x); fd.append('y', real.y);
+  fd.append('w', real.w); fd.append('h', real.h);
+
+  go.disabled = true;
+  statusEl.textContent = 'Lade hoch und verarbeite… (GPU fährt hoch, das kann beim ersten Mal etwas dauern)';
+
+  try {
+    const resp = await fetch('/process', { method: 'POST', body: fd });
+    if (!resp.ok) throw new Error(await resp.text());
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'clean.mp4'; a.click();
+    statusEl.textContent = 'Fertig! Download gestartet.';
+  } catch (err) {
+    statusEl.textContent = 'Fehler: ' + err.message;
+  } finally {
+    go.disabled = false;
+  }
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+runpod>=1.6.0
+torch
+simple-lama-inpainting
+opencv-python-headless
+pillow
+numpy
+requests
