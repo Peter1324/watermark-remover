@@ -9,7 +9,8 @@
   .stage { position: relative; display: inline-block; }
   video { max-width: 100%; display: block; }
   canvas { position: absolute; inset: 0; cursor: crosshair; }
-  button { padding: .6rem 1rem; font-size: 1rem; margin-top: 1rem; }
+  button, select { padding: .6rem 1rem; font-size: 1rem; margin-top: 1rem; }
+  label { display: inline-block; margin-top: 1rem; }
   #status { margin-top: 1rem; white-space: pre-wrap; }
 </style>
 </head>
@@ -24,6 +25,16 @@
 </div>
 
 <div>
+  <label>Ausgabe-Qualität:
+    <select id="target">
+      <option value="original" selected>Original (volle Auflösung)</option>
+      <option value="1080">1080p</option>
+      <option value="1440">2K / 1440p</option>
+    </select>
+  </label>
+</div>
+
+<div>
   <button id="go" disabled>Wasserzeichen entfernen</button>
 </div>
 <div id="status"></div>
@@ -34,6 +45,7 @@ const vid = document.getElementById('vid');
 const cv  = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const go  = document.getElementById('go');
+const target = document.getElementById('target');
 const statusEl = document.getElementById('status');
 
 let box = null;          // in ANZEIGE-Pixeln
@@ -42,7 +54,11 @@ let chosenFile = null;
 
 fileInput.onchange = e => {
   chosenFile = e.target.files[0];
+  if (!chosenFile) return;
   vid.src = URL.createObjectURL(chosenFile);
+  box = null;
+  go.disabled = true;
+  ctx.clearRect(0, 0, cv.width, cv.height);
 };
 
 vid.onloadedmetadata = () => {
@@ -70,6 +86,15 @@ cv.onmousemove = e => {
 };
 window.onmouseup = () => { drag = null; };
 
+async function readError(resp) {
+  const contentType = resp.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const data = await resp.json();
+    return data.detail ? JSON.stringify(data.detail, null, 2) : JSON.stringify(data, null, 2);
+  }
+  return await resp.text();
+}
+
 go.onclick = async () => {
   if (!box || !chosenFile) return;
   // Anzeige-Box -> echte Videopixel skalieren
@@ -84,13 +109,20 @@ go.onclick = async () => {
   fd.append('file', chosenFile);
   fd.append('x', real.x); fd.append('y', real.y);
   fd.append('w', real.w); fd.append('h', real.h);
+  fd.append('target', target.value);
 
   go.disabled = true;
   statusEl.textContent = 'Lade hoch und verarbeite… (GPU fährt hoch, das kann beim ersten Mal etwas dauern)';
 
   try {
     const resp = await fetch('/process', { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) throw new Error(await readError(resp));
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.includes('video/')) {
+      throw new Error(await readError(resp));
+    }
+
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
