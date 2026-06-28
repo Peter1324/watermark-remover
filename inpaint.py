@@ -127,7 +127,7 @@ def _clamp_boxes(raw_boxes, W: int, H: int):
     return clamped
 
 
-def _build_window_and_mask(boxes, W: int, H: int, pad: int = 24):
+def _build_window_and_mask(boxes, W: int, H: int, pad: int = 24, mask_pad: int = 8):
     """
     Baut EIN gemeinsames Fenster um alle Boxen und EINE gemeinsame Maske.
     Diese Maske kann für alle Frames wiederverwendet werden, weil die Boxen
