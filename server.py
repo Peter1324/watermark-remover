@@ -14,6 +14,7 @@ Starten:  uvicorn server:app --reload --port 8000
 Dann im Browser: http://localhost:8000
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -121,6 +122,55 @@ def _delete_file(path: str) -> None:
         pass
 
 
+def parse_boxes(boxes_json, x, y, w, h):
+    """
+    Nimmt neue Multi-Box-Eingabe als JSON an.
+    Fallback: alte Single-Box-Felder x/y/w/h.
+    Gibt immer eine Liste von {"x","y","w","h"} zurück.
+    """
+    if boxes_json not in (None, ""):
+        try:
+            raw = json.loads(boxes_json)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="boxes ist kein gültiges JSON.") from exc
+    elif all(v is not None for v in (x, y, w, h)):
+        raw = [{"x": x, "y": y, "w": w, "h": h}]
+    else:
+        raise HTTPException(status_code=400, detail="Keine Markierung übergeben.")
+
+    if not isinstance(raw, list) or len(raw) == 0:
+        raise HTTPException(status_code=400, detail="boxes muss eine nicht-leere Liste sein.")
+
+    cleaned = []
+    for i, b in enumerate(raw, start=1):
+        if not isinstance(b, dict):
+            raise HTTPException(status_code=400, detail=f"Box {i} muss ein Objekt mit x, y, w, h sein.")
+
+        missing = [k for k in ("x", "y", "w", "h") if k not in b]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Box {i} fehlt: {', '.join(missing)}")
+
+        try:
+            bx = float(b["x"])
+            by = float(b["y"])
+            bw = float(b["w"])
+            bh = float(b["h"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Box {i} enthält keine gültigen Zahlen.") from exc
+
+        if bw <= 0 or bh <= 0:
+            raise HTTPException(status_code=400, detail=f"Box {i} muss Breite und Höhe größer als 0 haben.")
+
+        cleaned.append({
+            "x": int(round(bx)),
+            "y": int(round(by)),
+            "w": int(round(bw)),
+            "h": int(round(bh)),
+        })
+
+    return cleaned
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open("index.html", "r", encoding="utf-8") as f:
@@ -130,14 +180,17 @@ def index():
 @app.post("/process")
 async def process(
     file: UploadFile,
-    x: int = Form(...),
-    y: int = Form(...),
-    w: int = Form(...),
-    h: int = Form(...),
+    boxes: str | None = Form(None),
+    x: int | None = Form(None),
+    y: int | None = Form(None),
+    w: int | None = Form(None),
+    h: int | None = Form(None),
     target: str = Form("original"),
 ):
     if target not in VALID_TARGETS:
         raise HTTPException(status_code=400, detail="target muss original, 1080 oder 1440 sein.")
+
+    parsed_boxes = parse_boxes(boxes, x, y, w, h)
 
     job_id = uuid.uuid4().hex
     src_key = f"in/{job_id}.mp4"
@@ -149,7 +202,8 @@ async def process(
     payload = {"input": {
         "video_url": presign_get(src_key),
         "upload_url": presign_put(out_key),
-        "box": [x, y, w, h],
+        "boxes": parsed_boxes,
+        "box": parsed_boxes[0],  # Fallback für alte Worker-Versionen
         "target": target,
     }}
 

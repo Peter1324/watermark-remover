@@ -9,19 +9,27 @@
   .stage { position: relative; display: inline-block; }
   video { max-width: 100%; display: block; }
   canvas { position: absolute; inset: 0; cursor: crosshair; }
-  button, select { padding: .6rem 1rem; font-size: 1rem; margin-top: 1rem; }
+  button, select { padding: .6rem 1rem; font-size: 1rem; margin-top: 1rem; margin-right: .5rem; }
   label { display: inline-block; margin-top: 1rem; }
   #status { margin-top: 1rem; white-space: pre-wrap; }
+  #markCount { margin-top: .75rem; font-weight: 600; }
 </style>
 </head>
 <body>
 <h1>Watermark Remover</h1>
-<p>1) Video laden &nbsp; 2) auf einem Frame ein Rechteck über das Wasserzeichen ziehen &nbsp; 3) starten.</p>
+<p>1) Video laden &nbsp; 2) eine oder mehrere Markierungen über Wasserzeichen ziehen &nbsp; 3) starten.</p>
 
 <input type="file" id="file" accept="video/*"><br><br>
 <div class="stage">
   <video id="vid" controls muted></video>
   <canvas id="cv"></canvas>
+</div>
+
+<div id="markCount">Markierungen: 0</div>
+
+<div>
+  <button id="undo" disabled>Letzte Markierung löschen</button>
+  <button id="clear" disabled>Alle Markierungen löschen</button>
 </div>
 
 <div>
@@ -45,46 +53,148 @@ const vid = document.getElementById('vid');
 const cv  = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const go  = document.getElementById('go');
+const undo = document.getElementById('undo');
+const clearBtn = document.getElementById('clear');
 const target = document.getElementById('target');
 const statusEl = document.getElementById('status');
+const markCount = document.getElementById('markCount');
 
-let box = null;          // in ANZEIGE-Pixeln
+let boxes = [];          // echte Videopixel: [{x,y,w,h}, ...]
+let previewBox = null;   // Anzeige-Pixel während Ziehen
 let drag = null;
 let chosenFile = null;
+
+function updateButtons() {
+  const hasBoxes = boxes.length > 0;
+  go.disabled = !chosenFile || !hasBoxes;
+  undo.disabled = !hasBoxes;
+  clearBtn.disabled = !hasBoxes;
+  markCount.textContent = 'Markierungen: ' + boxes.length;
+}
+
+function displayToReal(displayBox) {
+  const sx = vid.videoWidth  / cv.width;
+  const sy = vid.videoHeight / cv.height;
+  return {
+    x: Math.round(displayBox.x * sx),
+    y: Math.round(displayBox.y * sy),
+    w: Math.round(displayBox.w * sx),
+    h: Math.round(displayBox.h * sy)
+  };
+}
+
+function realToDisplay(realBox) {
+  const sx = cv.width / vid.videoWidth;
+  const sy = cv.height / vid.videoHeight;
+  return {
+    x: realBox.x * sx,
+    y: realBox.y * sy,
+    w: realBox.w * sx,
+    h: realBox.h * sy
+  };
+}
+
+function drawRect(b, label) {
+  ctx.strokeStyle = '#00e5ff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+  if (label) {
+    ctx.font = '14px system-ui, sans-serif';
+    ctx.fillStyle = '#00e5ff';
+    ctx.fillText(label, b.x + 4, Math.max(16, b.y - 6));
+  }
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  boxes.forEach((realBox, idx) => {
+    drawRect(realToDisplay(realBox), String(idx + 1));
+  });
+
+  if (previewBox) {
+    ctx.setLineDash([6, 4]);
+    drawRect(previewBox, '');
+    ctx.setLineDash([]);
+  }
+
+  updateButtons();
+}
 
 fileInput.onchange = e => {
   chosenFile = e.target.files[0];
   if (!chosenFile) return;
+
   vid.src = URL.createObjectURL(chosenFile);
-  box = null;
-  go.disabled = true;
-  ctx.clearRect(0, 0, cv.width, cv.height);
+  boxes = [];
+  previewBox = null;
+  drag = null;
+  statusEl.textContent = '';
+  redraw();
 };
 
 vid.onloadedmetadata = () => {
   // Overlay-Canvas auf angezeigte Videogröße bringen
   cv.width = vid.clientWidth;
   cv.height = vid.clientHeight;
+  redraw();
 };
 
+window.addEventListener('resize', () => {
+  if (!vid.videoWidth || !vid.videoHeight) return;
+  cv.width = vid.clientWidth;
+  cv.height = vid.clientHeight;
+  redraw();
+});
+
 cv.onmousedown = e => {
+  if (!chosenFile || !vid.videoWidth || !vid.videoHeight) return;
   const r = cv.getBoundingClientRect();
   drag = { x: e.clientX - r.left, y: e.clientY - r.top };
+  previewBox = null;
 };
+
 cv.onmousemove = e => {
   if (!drag) return;
   const r = cv.getBoundingClientRect();
-  const cx = e.clientX - r.left, cy = e.clientY - r.top;
-  box = {
-    x: Math.min(drag.x, cx), y: Math.min(drag.y, cy),
-    w: Math.abs(cx - drag.x), h: Math.abs(cy - drag.y)
+  const cx = e.clientX - r.left;
+  const cy = e.clientY - r.top;
+
+  previewBox = {
+    x: Math.min(drag.x, cx),
+    y: Math.min(drag.y, cy),
+    w: Math.abs(cx - drag.x),
+    h: Math.abs(cy - drag.y)
   };
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2;
-  ctx.strokeRect(box.x, box.y, box.w, box.h);
-  go.disabled = box.w < 3 || box.h < 3;
+
+  redraw();
 };
-window.onmouseup = () => { drag = null; };
+
+window.onmouseup = () => {
+  if (!drag) return;
+
+  if (previewBox && previewBox.w >= 3 && previewBox.h >= 3) {
+    const real = displayToReal(previewBox);
+    if (real.w > 0 && real.h > 0) {
+      boxes.push(real);
+    }
+  }
+
+  drag = null;
+  previewBox = null;
+  redraw();
+};
+
+undo.onclick = () => {
+  boxes.pop();
+  redraw();
+};
+
+clearBtn.onclick = () => {
+  boxes = [];
+  redraw();
+};
 
 async function readError(resp) {
   const contentType = resp.headers.get('content-type') || '';
@@ -96,19 +206,11 @@ async function readError(resp) {
 }
 
 go.onclick = async () => {
-  if (!box || !chosenFile) return;
-  // Anzeige-Box -> echte Videopixel skalieren
-  const sx = vid.videoWidth  / cv.width;
-  const sy = vid.videoHeight / cv.height;
-  const real = {
-    x: Math.round(box.x * sx), y: Math.round(box.y * sy),
-    w: Math.round(box.w * sx), h: Math.round(box.h * sy)
-  };
+  if (!boxes.length || !chosenFile) return;
 
   const fd = new FormData();
   fd.append('file', chosenFile);
-  fd.append('x', real.x); fd.append('y', real.y);
-  fd.append('w', real.w); fd.append('h', real.h);
+  fd.append('boxes', JSON.stringify(boxes));
   fd.append('target', target.value);
 
   go.disabled = true;
@@ -131,9 +233,11 @@ go.onclick = async () => {
   } catch (err) {
     statusEl.textContent = 'Fehler: ' + err.message;
   } finally {
-    go.disabled = false;
+    updateButtons();
   }
 };
+
+updateButtons();
 </script>
 </body>
 </html>

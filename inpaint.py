@@ -39,36 +39,149 @@ def get_model():
     return _lama
 
 
-def inpaint_region(frame_bgr: np.ndarray, box, pad: int = 24) -> np.ndarray:
+def _coerce_single_box(raw):
     """
-    frame_bgr: HxWx3 BGR numpy-Array (OpenCV-Frame)
-    box: (x, y, w, h) Position des Wasserzeichens in Pixeln
-    Rückgabe: BGR numpy-Array ohne Wasserzeichen.
+    Normalisiert eine einzelne Box zu (x, y, w, h).
+    Akzeptiert:
+    - Dict: {"x": ..., "y": ..., "w": ..., "h": ...}
+    - Liste/Tuple: [x, y, w, h]
     """
-    H, W = frame_bgr.shape[:2]
-    x, y, bw, bh = box
+    if isinstance(raw, dict):
+        if all(k in raw for k in ("x", "y", "w", "h")):
+            x, y, w, h = raw["x"], raw["y"], raw["w"], raw["h"]
+        else:
+            raise ValueError("Box muss x, y, w, h enthalten.")
+    elif isinstance(raw, (list, tuple)) and len(raw) == 4:
+        x, y, w, h = raw
+    else:
+        raise ValueError("Ungültiges Box-Format.")
 
-    # Fenster um das Wasserzeichen (auf Bildgrenzen begrenzt)
-    wx0 = max(0, x - pad)
-    wy0 = max(0, y - pad)
-    wx1 = min(W, x + bw + pad)
-    wy1 = min(H, y + bh + pad)
+    try:
+        x = float(x)
+        y = float(y)
+        w = float(w)
+        h = float(h)
+    except (TypeError, ValueError):
+        raise ValueError("Box-Werte müssen Zahlen sein.")
+
+    if not all(math.isfinite(v) for v in (x, y, w, h)):
+        raise ValueError("Box-Werte müssen gültige Zahlen sein.")
+    if w <= 0 or h <= 0:
+        raise ValueError("Box-Breite und Box-Höhe müssen größer als 0 sein.")
+
+    return (
+        int(round(x)),
+        int(round(y)),
+        int(round(w)),
+        int(round(h)),
+    )
+
+
+def _coerce_boxes(raw_boxes):
+    """
+    Macht aus einer einzelnen Box oder einer Box-Liste immer eine Liste von
+    (x, y, w, h)-Tupeln. Dadurch bleibt der alte Single-Box-Flow kompatibel.
+    """
+    if raw_boxes is None:
+        raise ValueError("Keine Boxen übergeben.")
+
+    if isinstance(raw_boxes, dict):
+        return [_coerce_single_box(raw_boxes)]
+
+    if isinstance(raw_boxes, (list, tuple)):
+        if len(raw_boxes) == 0:
+            raise ValueError("Keine Boxen übergeben.")
+
+        # Alte Form: [x, y, w, h]
+        if len(raw_boxes) == 4 and not isinstance(raw_boxes[0], (dict, list, tuple)):
+            return [_coerce_single_box(raw_boxes)]
+
+        return [_coerce_single_box(b) for b in raw_boxes]
+
+    raise ValueError("Ungültiges Boxen-Format.")
+
+
+def _clamp_boxes(raw_boxes, W: int, H: int):
+    """
+    Schneidet Boxen auf die Bildgrenzen zu.
+    Komplett außerhalb liegende Boxen werden verworfen.
+    Wenn danach keine gültige Box übrig bleibt, wird hart abgebrochen.
+    """
+    boxes = _coerce_boxes(raw_boxes)
+    clamped = []
+
+    for x, y, w, h in boxes:
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(W, x + w)
+        y1 = min(H, y + h)
+
+        if x1 <= x0 or y1 <= y0:
+            continue
+
+        clamped.append((x0, y0, x1 - x0, y1 - y0))
+
+    if not clamped:
+        raise ValueError("Keine gültige Markierung innerhalb des Videos gefunden.")
+
+    return clamped
+
+
+def _build_window_and_mask(boxes, W: int, H: int, pad: int = 24):
+    """
+    Baut EIN gemeinsames Fenster um alle Boxen und EINE gemeinsame Maske.
+    Diese Maske kann für alle Frames wiederverwendet werden, weil die Boxen
+    aktuell statisch fürs ganze Video gelten.
+    """
+    wx0 = max(0, min(x for x, y, w, h in boxes) - pad)
+    wy0 = max(0, min(y for x, y, w, h in boxes) - pad)
+    wx1 = min(W, max(x + w for x, y, w, h in boxes) + pad)
+    wy1 = min(H, max(y + h for x, y, w, h in boxes) + pad)
+
+    if wx1 <= wx0 or wy1 <= wy0:
+        raise ValueError("Markierungsfenster ist ungültig.")
+
+    mask = Image.new("L", (wx1 - wx0, wy1 - wy0), 0)
+    d = ImageDraw.Draw(mask)
+
+    for x, y, w, h in boxes:
+        mx0 = x - wx0
+        my0 = y - wy0
+        mx1 = mx0 + w
+        my1 = my0 + h
+        d.rectangle([mx0, my0, mx1, my1], fill=255)
+
+    return (wx0, wy0, wx1, wy1), mask
+
+
+def _inpaint_window(frame_bgr: np.ndarray, window, mask) -> np.ndarray:
+    """
+    Inpaintet genau ein Fenster mit genau einer gemeinsamen Maske.
+    """
+    wx0, wy0, wx1, wy1 = window
 
     window_bgr = frame_bgr[wy0:wy1, wx0:wx1]
+    if window_bgr.size == 0:
+        raise ValueError("Inpainting-Fenster ist leer.")
+
     window_pil = Image.fromarray(cv2.cvtColor(window_bgr, cv2.COLOR_BGR2RGB))
-
-    # Maske: weiß wo das Wasserzeichen ist, schwarz sonst (in Fenster-Koordinaten)
-    mask = Image.new("L", window_pil.size, 0)
-    d = ImageDraw.Draw(mask)
-    mx0, my0 = x - wx0, y - wy0
-    d.rectangle([mx0, my0, mx0 + bw, my0 + bh], fill=255)
-
     result_pil = get_model()(window_pil, mask).resize(window_pil.size)
     result_bgr = cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
 
     out = frame_bgr.copy()
     out[wy0:wy1, wx0:wx1] = result_bgr
     return out
+
+
+def inpaint_region(frame_bgr: np.ndarray, box, pad: int = 24) -> np.ndarray:
+    """
+    Rückwärtskompatibler Wrapper für den alten Single-Box-Flow.
+    Intern nutzt er bereits die neue Multi-Box-Logik mit genau einer Box.
+    """
+    H, W = frame_bgr.shape[:2]
+    boxes = _clamp_boxes(box, W, H)
+    window, mask = _build_window_and_mask(boxes, W, H, pad=pad)
+    return _inpaint_window(frame_bgr, window, mask)
 
 
 def _run_probe(args) -> subprocess.CompletedProcess:
@@ -124,7 +237,7 @@ def _scale_filter(src_w: int, src_h: int, target: Optional[str]) -> Optional[str
     return f"scale=-2:{target_h}"
 
 
-def process_video(input_path: str, output_path: str, box, target: str = "original") -> None:
+def process_video(input_path: str, output_path: str, boxes, target: str = "original") -> None:
     """
     Streamt Frames über OpenCV, inpaintet pro Frame nur das Wasserzeichen-Fenster,
     pipet rohe Frames an ffmpeg und übernimmt Audio aus der Originaldatei.
@@ -142,6 +255,9 @@ def process_video(input_path: str, output_path: str, box, target: str = "origina
     if W <= 0 or H <= 0:
         cap.release()
         raise RuntimeError("Konnte Videoauflösung nicht lesen.")
+
+    boxes = _clamp_boxes(boxes, W, H)
+    window, mask = _build_window_and_mask(boxes, W, H)
 
     vf = _scale_filter(W, H, target)
     vf_args = ["-vf", vf] if vf else []
@@ -166,7 +282,7 @@ def process_video(input_path: str, output_path: str, box, target: str = "origina
             ok, frame = cap.read()
             if not ok:
                 break
-            result = inpaint_region(frame, box)
+            result = _inpaint_window(frame, window, mask)
             ff.stdin.write(np.ascontiguousarray(result, dtype=np.uint8).tobytes())
     except BrokenPipeError:
         # ffmpeg ist vorher gestorben; der konkrete Fehler wird unten aus stderr gelesen.
