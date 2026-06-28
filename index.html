@@ -217,6 +217,69 @@ const fmtTime = sec => {
   const s = Math.floor(sec % 60);
   return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 };
+
+function videoContentRect(card){
+  const { video, canvas } = card.refs;
+  const cw = canvas.width || 0;
+  const ch = canvas.height || 0;
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+
+  if (!cw || !ch || !vw || !vh) {
+    return { x:0, y:0, w:cw, h:ch };
+  }
+
+  const canvasRatio = cw / ch;
+  const videoRatio = vw / vh;
+
+  if (canvasRatio > videoRatio) {
+    const h = ch;
+    const w = h * videoRatio;
+    return { x:(cw - w) / 2, y:0, w, h };
+  } else {
+    const w = cw;
+    const h = w / videoRatio;
+    return { x:0, y:(ch - h) / 2, w, h };
+  }
+}
+
+function displayRectToReal(card, d){
+  const { video } = card.refs;
+  const r = videoContentRect(card);
+
+  const x0 = clamp(d.x, r.x, r.x + r.w);
+  const y0 = clamp(d.y, r.y, r.y + r.h);
+  const x1 = clamp(d.x + d.w, r.x, r.x + r.w);
+  const y1 = clamp(d.y + d.h, r.y, r.y + r.h);
+
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const right = Math.max(x0, x1);
+  const bottom = Math.max(y0, y1);
+
+  const rx0 = clamp(Math.round(((left - r.x) / r.w) * video.videoWidth), 0, video.videoWidth);
+  const ry0 = clamp(Math.round(((top - r.y) / r.h) * video.videoHeight), 0, video.videoHeight);
+  const rx1 = clamp(Math.round(((right - r.x) / r.w) * video.videoWidth), 0, video.videoWidth);
+  const ry1 = clamp(Math.round(((bottom - r.y) / r.h) * video.videoHeight), 0, video.videoHeight);
+
+  return {
+    x: rx0,
+    y: ry0,
+    w: Math.max(1, rx1 - rx0),
+    h: Math.max(1, ry1 - ry0)
+  };
+}
+
+function realRectToDisplay(card, b){
+  const { video } = card.refs;
+  const r = videoContentRect(card);
+  return {
+    x: r.x + (b.x / video.videoWidth) * r.w,
+    y: r.y + (b.y / video.videoHeight) * r.h,
+    w: (b.w / video.videoWidth) * r.w,
+    h: (b.h / video.videoHeight) * r.h
+  };
+}
 const escapeHtml = s => s.replace(/[&<>"']/g, c => (
   {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -330,8 +393,11 @@ function wireCard(card){
   let start = null;
   const pos = e => {
     const r = canvas.getBoundingClientRect();
-    return { x: clamp(e.clientX - r.left, 0, canvas.width),
-             y: clamp(e.clientY - r.top, 0, canvas.height) };
+    const vr = videoContentRect(card);
+    return {
+      x: clamp(e.clientX - r.left, vr.x, vr.x + vr.w),
+      y: clamp(e.clientY - r.top, vr.y, vr.y + vr.h)
+    };
   };
   canvas.addEventListener('pointerdown', e => {
     if (!card.markMode) return;
@@ -354,10 +420,9 @@ function wireCard(card){
       if (card.boxes.length >= MAX_BOXES){
         flashNote(card, `Maximal ${MAX_BOXES} Markierungen.`);
       } else {
-        const sx = video.videoWidth / canvas.width;
-        const sy = video.videoHeight / canvas.height;
-        card.boxes.push({ x:Math.round(d.x*sx), y:Math.round(d.y*sy),
-                          w:Math.round(d.w*sx), h:Math.round(d.h*sy) });
+        const realBox = displayRectToReal(card, d);
+        card.boxes.push(realBox);
+        console.log("Neue Markierung in echten Videopixeln:", realBox);
         if (['needs_boxes','ready','error','canceled'].includes(card.status))
           setStatus(card, 'ready');
       }
@@ -424,9 +489,10 @@ function redraw(card){
   const { canvas, video } = card.refs;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const vw = video.videoWidth || canvas.width, vh = video.videoHeight || canvas.height;
-  const sx = canvas.width / vw, sy = canvas.height / vh;
-  card.boxes.forEach((b, i) => drawMark(ctx, b.x*sx, b.y*sy, b.w*sx, b.h*sy, i+1, false));
+  card.boxes.forEach((b, i) => {
+    const d = realRectToDisplay(card, b);
+    drawMark(ctx, d.x, d.y, d.w, d.h, i+1, false);
+  });
   if (card.dragRect){
     const d = card.dragRect;
     drawMark(ctx, d.x, d.y, d.w, d.h, card.boxes.length+1, true);
