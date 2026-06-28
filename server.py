@@ -203,7 +203,12 @@ async def process(
         "video_url": presign_get(src_key),
         "upload_url": presign_put(out_key),
         "boxes": parsed_boxes,
-        "box": parsed_boxes[0],  # Fallback für alte Worker-Versionen
+        "box": [
+            parsed_boxes[0]["x"],
+            parsed_boxes[0]["y"],
+            parsed_boxes[0]["w"],
+            parsed_boxes[0]["h"],
+        ],  # Fallback für alte Worker-Versionen
         "target": target,
     }}
 
